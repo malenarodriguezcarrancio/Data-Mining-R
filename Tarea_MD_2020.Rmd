@@ -1,0 +1,154 @@
+---
+title: "Tarea Minería de Datos y Modeliación predictiva"
+author: "Master en Big Data NTIC. Guillermo Villarino"
+date: "Otoño 2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Modelos de regresión para la predicción de la radiación natural
+
+Se han recogido datos reales sobre distintas variables relacionadas con los niveles de radiación natural de la tierra. Las mediciones fueron recogidas durante el año 2005 en intervalos de 1 hora. Los datos ha sido previamente separados en dos conjuntos:
+
+1. *Rad2005_Training.RDS* contiene el 90% de las observaciones en las que las variables respuetas no presentan valores perdidos. Debido a fallos en los equipos de medición, existe un problema general de valores perdidos en las variables independientes, y tratándose de datos temporales, la estrategia adecuada será mantener la mayor cantidad de observaciones posibles. 
+
+2. *Rad2005_Test.RDS* contiene el 10% de las observaciones donde las variables respuetas no se encuentran recogidas y los predictores no presentan valores perdidos para facilitar las predicciones. 
+
+Por tanto, el objetivo es inspeccionar los datos y realizar los sigueintes pasos:
+
+1. Análisis descriptivo de datos en el conjunto de training. Número de observaciones, número y naturaleza de variables, datos erróneos etc. Distribuciones de variables. Tal vez resulta útil comprobar si las variables en los conjuntos de training y test presentan distribuciones similares.. 
+
+2. Análisis de valores extremos (outliers). Decisiones
+
+3. Análisis de valores perdidos. Imputaciones. 
+
+4. Transformaciones de variables y relaciones con las variables objetivo. 
+
+5. Modelos de regresión lineal para predecir la Tasa de Dosis (TD) de radiación
+
+  - Modelos manuales
+  - Selección de variables clásica
+  - Selección de variables aleatoria
+  - Análisis de estabilidad en esquema Tr/Tst y validación cruzada repetida.
+  - Selección del modelo ganador
+  - Interpretación de los coeficientes
+  
+6. Modelos de regresión logística para predecir los picos de radiación (PicoRad)
+
+  - Modelos manuales
+  - Selección de variables clásica
+  - Selección de variables aleatoria
+  - Análisis de estabilidad en esquema Tr/Tst y validación cruzada repetida.
+  - Selección del modelo ganador
+  - Punto de corte de la probabilidad estimada
+  - Interpretación de los coeficientes
+
+
+Una vez elegido el modelo final por medio de la relación entre capacidad predictiva y complejidad, se aplicará al test para predecir los valores de TD y PicoRad y se guardarán las predicciones en un data frame con nombre **predicciones.R** que contendrá dos columnas llamadas **TD_hat** y **PicoRad_hat** y tantas filas como registros del conjunto de test (876 en concreto). 
+
+Tengo en mi poder la verdad verdadera sobre las variables objetivo, por lo que, calcularé los valores de ajuste que cada cual consigue y haremos un ranking de precisión de los mejores modelos. A jugar!!
+
+Se entregarán:
+
+1- *Informe en PDF (máximo 20 páginas)* en el que se exlicarán detalladamente los pasos seguidos incluyendo los códigos y salidas más relevantes. Imprescindible mostrar los modelos finales (summary). Es muy importante comentar y **justificar razonadamente** las decisiones que se toman. Es un informe donde se "venden" los modelos así que hay que ser convincentes!
+
+2- *Archivo de datos con las predicciones* para el conjunto de test. Dimensiones 876 filas x 3 columnas (Fecha, TD, PicoRad). El formato puede ser R (falla en ocasiones con las fechas POSIXct), RDS (preferentemente), Csv, excel... Hay que asegurarse bien de que se puede leer sin problema! 
+
+## Lectura e inspección inicial
+
+Dado que es un archivo RDS, se utiliza readRDS() para la lectura. Se comprueba que es correcto y se presentan las primeras tablas de inspección. 
+```{r cars, message=FALSE, warning=FALSE}
+library(xts)
+library(forecast)
+library(grid)
+library(gridExtra)
+library(ggplot2)
+
+setwd("~/Master_Big_Data_Bussiness_Analytics_2020/Material para el campus/Material Campus_Mayo2020/")
+
+# Carga de funciones
+source("Funciones_R.R")
+
+# Lectura del archivo
+Radiacion2005 <- readRDS("Rad2005_Training.RDS")
+
+# Inpsección rápida
+str(Radiacion2005)
+summary(Radiacion2005)
+
+# Inspección gráfica 1: Boxplot
+box<-dfplot_box(data.frame(Radiacion2005)[,-1]) # Devuelve una lista de gráficos. Hay que forzar al objeto a ser data.frame!!!!
+marrangeGrob(box, ncol = 4, nrow = 3) # Se representa en una rejilla de 4x3
+
+# Inspección gráfica 2: Histograma
+his<-dfplot_his(data.frame(Radiacion2005)[,-1])
+marrangeGrob(his, ncol = 4, nrow = 3)
+```
+
+Este es el aspecto del archivo. Ahora vamos a connvertirlo a serie temporal y representarlo gráficamente.
+
+## Visualización de datos temporales
+
+Dado que el archivo de datos propuesto tiene caracter temporal, es de mucha ayuda la representación de las variables como series de tiempo. De esta forma se puede ver rápidamente los periodos de datos faltantes,la evolución de las variables y de sus posibles relaciones etc. 
+
+Es posible transformar los data.frame() en objetos xts() para la visualización y selección temporales.
+```{r, warning=FALSE}
+# crear serie temporal periodo completo
+Rad5_tmp<-xts(as.matrix(Radiacion2005[,-1]), order.by = Radiacion2005$Fecha)
+
+# Representación de variables objetivo
+autoplot(Rad5_tmp$TD)
+#autoplot(Rad5_tmp$PicoRad) # Es una variable binaria...
+
+# Representación de imputs
+
+# Radón y descendientes
+autoplot(Rad5_tmp[,2:3])
+
+# Presión
+#autoplot(Rad5_tmp[,4])
+
+# Temperatura
+#autoplot(Rad5_tmp[,5])
+
+# Humedad Relativa
+#autoplot(Rad5_tmp[,6])
+
+# Velocidad del viento y lluvia
+#autoplot(Rad5_tmp[,7:8])
+
+# Irradiación Solar
+#autoplot(Rad5_tmp[,9])
+
+
+```
+
+Es interesante manejar las opciones de selección de ventanas temporales para poder valorar el comportamiento local de los datos y evaluar la calidad de las imputaciones, predicciones etc. Os dejo unos ejemplos.
+
+```{r}
+# Seleccionar periodos en xts
+
+# Mes de enero (picos de radiación)
+enero<-Rad5_tmp['2005-01']
+en<-autoplot(enero[,10])
+
+# Mes de Agosto 
+agosto<-Rad5_tmp['2005-08']
+aug<-autoplot(agosto)
+
+# Hasta marzo (Tempreatura)
+hastaMarzo<-Rad5_tmp['/2005-03']
+hMar<-autoplot(hastaMarzo[,5])
+
+# Desde Noviembre (Descendientes de radon)
+desNov<-Rad5_tmp['2005-11/']
+dNov<-autoplot(desNov[,3])
+
+# Mostrar gráficos de agosto
+aug
+```
+
+**Nota Importante**: Si en los modelos finales se utilizan transofrmaciones de vairiables, habrá que calcular dichas transformaciones en el conjunto de test previo a la predicción!! Para ello, se crearán las transformaciones implicadas mediante las fórmulas 
